@@ -11,7 +11,7 @@ import {
     computeGitSha, 
     uploadToGitHub 
 } from '../services/githubService';
-import { FileSystemDirectoryHandle, getFilesFromDirectoryHandle, saveDirectoryHandle, getSavedDirectoryHandle } from '../utils/fileSystem';
+import { FileSystemDirectoryHandle, getFilesFromDirectoryHandle, saveDirectoryHandle, getSavedDirectoryHandle, verifyPermission } from '../utils/fileSystem';
 
 interface GitHubSyncModalProps {
   isOpen: boolean;

@@ -88,3 +88,23 @@ export const getSavedDirectoryHandle = async (): Promise<FileSystemDirectoryHand
     req.onerror = () => reject(req.error);
   });
 };
+
+// Verify permission for a directory handle (request if needed)
+export const verifyPermission = async (
+  handle: FileSystemDirectoryHandle,
+  readWrite: boolean = false
+): Promise<boolean> => {
+  const options: { mode: 'read' | 'readwrite' } = { mode: readWrite ? 'readwrite' : 'read' };
+  
+  // Check if permission was already granted
+  if ((await handle.queryPermission(options)) === 'granted') {
+    return true;
+  }
+  
+  // Request permission if not granted
+  if ((await handle.requestPermission(options)) === 'granted') {
+    return true;
+  }
+  
+  return false;
+};
