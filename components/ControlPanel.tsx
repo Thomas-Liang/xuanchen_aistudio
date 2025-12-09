@@ -25,11 +25,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const showImageSize = model.includes('hd') || model.includes('pro') || model.includes('size');
 
   return (
-    <div className="space-y-6 bg-dark-800/50 p-6 rounded-2xl border border-dark-700 h-full">
-      <div className="flex items-center justify-between pb-4 border-b border-dark-700">
+    <div className="space-y-4 md:space-y-6 bg-dark-800/50 p-4 md:p-6 rounded-xl md:rounded-2xl border border-dark-700 h-full">
+      <div className="flex items-center justify-between pb-3 md:pb-4 border-b border-dark-700">
         <div className="flex items-center space-x-2">
-            <Sliders className="text-brand-400" size={20} />
-            <h2 className="text-lg font-semibold text-white">{t('controls.title')}</h2>
+            <Sliders className="text-brand-400" size={18} />
+            <h2 className="text-base md:text-lg font-semibold text-white">{t('controls.title')}</h2>
         </div>
         <button 
           onClick={onOpenSettings}
@@ -40,15 +40,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         </button>
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-4 md:space-y-6">
         
         {/* Current Model Display */}
         <div className="space-y-2">
             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">{t('controls.active_model')}</label>
-            <div className="flex items-center justify-between px-4 py-3 bg-dark-900 border border-dark-700 rounded-lg">
-                <div className="flex items-center gap-3 overflow-hidden">
+            <div className="flex items-center justify-between px-3 md:px-4 py-2 md:py-3 bg-dark-900 border border-dark-700 rounded-lg">
+                <div className="flex items-center gap-2 md:gap-3 overflow-hidden">
                     <div className="w-2 h-2 rounded-full bg-brand-400 shrink-0 shadow-[0_0_8px_rgba(114,152,148,0.6)]" />
-                    <span className="text-sm text-slate-200 truncate font-mono" title={model}>
+                    <span className="text-xs md:text-sm text-slate-200 truncate font-mono" title={model}>
                         {model}
                     </span>
                 </div>
@@ -61,7 +61,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             <select
             value={aspectRatio}
             onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
-            className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+            className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 md:py-2.5 text-sm text-slate-200 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
             >
             {Object.entries(AspectRatio).map(([key, value]) => (
                 <option key={key} value={value}>
@@ -94,10 +94,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         )}
       </div>
       
-      <div className="pt-4 border-t border-dark-700">
+      <div className="pt-3 md:pt-4 border-t border-dark-700">
         <button 
             onClick={onOpenSettings}
-            className="w-full py-2.5 px-4 rounded-lg border border-dashed border-dark-600 text-slate-400 hover:text-white hover:border-brand-500 hover:bg-dark-700/50 transition-all text-sm flex items-center justify-center gap-2"
+            className="w-full py-2 md:py-2.5 px-4 rounded-lg border border-dashed border-dark-600 text-slate-400 hover:text-white hover:border-brand-500 hover:bg-dark-700/50 transition-all text-sm flex items-center justify-center gap-2"
         >
             <Settings2 size={16} />
             {t('controls.configure_btn')}

@@ -438,38 +438,38 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-dark-800 border border-dark-700 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-dark-800 border border-dark-700 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] sm:max-h-[85vh]">
         
         {/* Header */}
-        <div className="p-4 border-b border-dark-700 flex justify-between items-center bg-dark-900/50">
-          <div className="flex items-center gap-4">
-              <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-                <Github className="text-white" />
-                GitHub Sync
+        <div className="p-3 sm:p-4 border-b border-dark-700 flex justify-between items-center bg-dark-900/50">
+          <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
+              <h2 className="text-base sm:text-xl font-semibold text-white flex items-center gap-2">
+                <Github className="text-white" size={20} />
+                <span className="hidden xs:inline">GitHub</span> Sync
               </h2>
               {/* Mode Toggle */}
-              <div className="flex bg-dark-800 p-1 rounded-lg border border-dark-700">
+              <div className="flex bg-dark-800 p-0.5 sm:p-1 rounded-lg border border-dark-700">
                   <button 
                     onClick={() => setMode('manual')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${mode === 'manual' ? 'bg-dark-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                    className={`px-2 sm:px-3 py-1 rounded-md text-xs font-medium transition-all ${mode === 'manual' ? 'bg-dark-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
                   >
                       Manual
                   </button>
                   <button 
                     onClick={() => setMode('bot')}
-                    className={`px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-1 ${mode === 'bot' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-500 hover:text-slate-300'}`}
+                    className={`px-2 sm:px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-1 ${mode === 'bot' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-500 hover:text-slate-300'}`}
                   >
                       <Bot size={12} />
-                      Auto Bot
+                      <span className="hidden sm:inline">Auto</span> Bot
                   </button>
               </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
+          <button onClick={onClose} className="text-slate-400 hover:text-white p-1">✕</button>
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-6 scrollbar-thin">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 scrollbar-thin">
             
             {/* Error Banner */}
             {errorMsg && (
@@ -521,7 +521,7 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                          {/* Repo Select */}
                          <div className="space-y-2">
                              <label className="text-xs font-bold text-slate-500 uppercase">Target Repository</label>
@@ -598,7 +598,7 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
                     </div>
 
                     {/* Terminal Log */}
-                    <div className="bg-black/40 rounded-xl border border-dark-700 p-4 font-mono text-xs h-48 overflow-y-auto">
+                    <div className="bg-black/40 rounded-xl border border-dark-700 p-3 sm:p-4 font-mono text-xs h-40 sm:h-48 overflow-y-auto">
                         <div className="flex items-center gap-2 text-slate-500 mb-2 border-b border-dark-700 pb-2">
                             <History size={12} />
                             <span>Activity Log</span>
