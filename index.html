@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XuanChen AI Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      :root {
+        /* Default Sage Theme Variables - Initial Load */
+        --brand-50: #f5f7f7;
+        --brand-100: #e0e7e7;
+        --brand-200: #c1d0cf;
+        --brand-300: #9db4b3;
+        --brand-400: #759392;
+        --brand-500: #2F4F4F;
+        --brand-600: #264040;
+        --brand-700: #1f3333;
+        --brand-800: #1a2929;
+        --brand-900: #162222;
+
+        /* Default Dark Backgrounds (Sage) */
+        --dark-900: #192222;
+        --dark-800: #232e2e;
+        --dark-700: #344545;
+      }
+    </style>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: 'var(--brand-50)',
+                100: 'var(--brand-100)',
+                200: 'var(--brand-200)',
+                300: 'var(--brand-300)',
+                400: 'var(--brand-400)',
+                500: 'var(--brand-500)',
+                600: 'var(--brand-600)',
+                700: 'var(--brand-700)',
+                800: 'var(--brand-800)',
+                900: 'var(--brand-900)',
+              },
+              dark: {
+                900: 'var(--dark-900)',
+                800: 'var(--dark-800)',
+                700: 'var(--dark-700)',
+              }
+            },
+            fontFamily: {
+              serif: ['Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
+            },
+            animation: {
+              'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            }
+          },
+        },
+      }
+    </script>
+  <script type="importmap">
+{
+  "imports": {
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
+    "react/": "https://aistudiocdn.com/react@^19.2.1/",
+    "react": "https://aistudiocdn.com/react@^19.2.1",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-dark-900 text-slate-200 antialiased selection:bg-brand-500 selection:text-white transition-colors duration-500">
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

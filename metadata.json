@@ -1,0 +1,5 @@
+{
+  "name": "NanoBanana Studio V5",
+  "description": "A specialized creative interface for the Nano-banana and Gemini-based image editing models, featuring aspect ratio control, high-definition support, and multi-reference image inputs.",
+  "requestFramePermissions": []
+}
