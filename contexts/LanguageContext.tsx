@@ -123,6 +123,12 @@ const translations = {
     'docs.theme_desc': 'Support multiple color themes: Sage, Ocean, Crimson, Amber. Click the theme button in the header to cycle through themes.',
     'docs.responsive': 'Responsive Design',
     'docs.responsive_desc': 'Fully responsive UI supporting mobile, tablet, and desktop. Header buttons auto-adapt, modals slide up from bottom on mobile for better touch experience.',
+    'docs.member_system': 'Member System',
+    'docs.member_desc': 'Complete member management with login/registration, subscription plans, credit system, and usage tracking.',
+    'docs.member_plans': 'Subscription Plans',
+    'docs.member_plans_desc': 'Four tiers: Free (10 credits), Basic (100 credits), Pro (500 credits), Enterprise (2000 credits). Each generation costs 1 credit.',
+    'docs.member_admin': 'Admin Panel',
+    'docs.member_admin_desc': 'Full backend management for administrators: user management, order tracking, usage statistics, and system settings.',
     'docs.got_it': 'I Understand',
   },
   zh: {
@@ -239,6 +245,12 @@ const translations = {
     'docs.theme_desc': '支持多种配色主题：山葵青、深海蓝、绯红、琥珀。点击顶部主题按钮可循环切换。',
     'docs.responsive': '响应式设计',
     'docs.responsive_desc': '完全响应式 UI，支持手机、平板、桌面端。顶部按钮自动适配，弹窗在手机端从底部滑入，触摸体验更佳。',
+    'docs.member_system': '会员系统',
+    'docs.member_desc': '完整的会员管理功能，包括登录注册、订阅套餐、积分系统和使用记录追踪。',
+    'docs.member_plans': '订阅套餐',
+    'docs.member_plans_desc': '四档套餐：免费版（10积分）、基础版（100积分）、专业版（500积分）、企业版（2000积分）。每次生成消耗1积分。',
+    'docs.member_admin': '后台管理',
+    'docs.member_admin_desc': '管理员专属后台：用户管理、订单追踪、使用统计、系统设置等功能一应俱全。',
     'docs.got_it': '我明白了',
   }
 };

@@ -7,9 +7,13 @@ import { DocsModal } from './components/DocsModal';
 import { LoginModal } from './components/LoginModal';
 import { PaymentModal } from './components/PaymentModal';
 import { AccountModal } from './components/AccountModal';
+import { MemberLoginModal } from './components/MemberLoginModal';
+import { MemberDashboard } from './components/MemberDashboard';
+import { AdminPanel } from './components/AdminPanel';
+import { RechargeModal } from './components/RechargeModal';
 import { generateImage } from './services/apiService';
 import { DEFAULT_BASE_URL } from './constants';
-import { Loader2, Download, AlertCircle, Wand2, Image as ImageIcon, BookOpen, Lock, Crown, UserCircle, Palette, Github } from 'lucide-react';
+import { Loader2, Download, AlertCircle, Wand2, Image as ImageIcon, BookOpen, Lock, Crown, UserCircle, Palette, Github, Shield, Zap, LogIn } from 'lucide-react';
 import { useLanguage } from './contexts/LanguageContext';
 import { useAuth } from './contexts/AuthContext';
 import { useTheme } from './contexts/ThemeContext';
@@ -17,7 +21,7 @@ import { GitHubSyncModal } from './components/GitHubSyncModal';
 
 const App: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
-  const { logout } = useAuth();
+  const { logout, currentMember, isAdmin, useCredits, addUsageRecord } = useAuth();
   const { theme, setTheme, availableThemes } = useTheme();
 
   // Config State
@@ -33,6 +37,10 @@ const App: React.FC = () => {
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isGitHubOpen, setIsGitHubOpen] = useState(false);
+  const [isMemberLoginOpen, setIsMemberLoginOpen] = useState(false);
+  const [isMemberDashboardOpen, setIsMemberDashboardOpen] = useState(false);
+  const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [isRechargeOpen, setIsRechargeOpen] = useState(false);
   
   // Input State
   const [prompt, setPrompt] = useState('');
@@ -48,6 +56,15 @@ const App: React.FC = () => {
   const handleGenerate = async () => {
     if (!prompt.trim()) {
       setResult(prev => ({ ...prev, error: t('app.error_prompt') }));
+      return;
+    }
+
+    // Check credits if member is logged in
+    if (currentMember && currentMember.credits < 1) {
+      setResult(prev => ({ 
+        ...prev, 
+        error: language === 'zh' ? '积分不足，请充值' : 'Insufficient credits, please upgrade' 
+      }));
       return;
     }
 
@@ -87,6 +104,18 @@ const App: React.FC = () => {
 
         if (finalImage) {
             setResult({ imageUrl: finalImage, error: null, isLoading: false });
+            
+            // Deduct credits and record usage if member is logged in
+            if (currentMember) {
+              useCredits(1);
+              addUsageRecord({
+                memberId: currentMember.id,
+                type: 'generation',
+                creditsUsed: 1,
+                prompt: prompt.substring(0, 100),
+                model,
+              });
+            }
         } else {
             throw new Error("No recognized image data format (b64_json, base64, or url) received.");
         }
@@ -143,6 +172,28 @@ const App: React.FC = () => {
         onClose={() => setIsGitHubOpen(false)}
       />
 
+      <MemberLoginModal
+        isOpen={isMemberLoginOpen}
+        onClose={() => setIsMemberLoginOpen(false)}
+      />
+
+      <MemberDashboard
+        isOpen={isMemberDashboardOpen}
+        onClose={() => setIsMemberDashboardOpen(false)}
+        onOpenAdmin={() => setIsAdminPanelOpen(true)}
+        onOpenRecharge={() => setIsRechargeOpen(true)}
+      />
+
+      <AdminPanel
+        isOpen={isAdminPanelOpen}
+        onClose={() => setIsAdminPanelOpen(false)}
+      />
+
+      <RechargeModal
+        isOpen={isRechargeOpen}
+        onClose={() => setIsRechargeOpen(false)}
+      />
+
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6 lg:space-y-8">
         
         {/* Header */}
@@ -155,14 +206,16 @@ const App: React.FC = () => {
             
             {/* Action Buttons - Always visible, compact */}
             <div className="flex items-center gap-1.5 sm:gap-2">
-              {/* Premium */}
+              {/* Recharge / Premium */}
               <button 
-                  onClick={() => setIsPaymentOpen(true)}
+                  onClick={() => currentMember ? setIsRechargeOpen(true) : setIsPaymentOpen(true)}
                   className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-500 hover:bg-amber-500 hover:text-white transition-all text-xs font-bold"
-                  title={t('app.payment_btn')}
+                  title={currentMember ? (language === 'zh' ? '充值' : 'Recharge') : t('app.payment_btn')}
               >
-                  <Crown size={14} />
-                  <span className="hidden sm:inline">{t('app.payment_btn')}</span>
+                  {currentMember ? <Zap size={14} /> : <Crown size={14} />}
+                  <span className="hidden sm:inline">
+                    {currentMember ? (language === 'zh' ? '充值' : 'Recharge') : t('app.payment_btn')}
+                  </span>
               </button>
               
               {/* Theme */}
@@ -195,7 +248,44 @@ const App: React.FC = () => {
               {/* Divider */}
               <div className="w-px h-6 bg-dark-700 mx-0.5 hidden sm:block" />
               
-              {/* Account */}
+              {/* Member/Login Button */}
+              {currentMember ? (
+                <button 
+                  onClick={() => setIsMemberDashboardOpen(true)}
+                  className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded-full bg-brand-500/10 border border-brand-500/30 text-brand-400 hover:bg-brand-500/20 transition-all"
+                  title={currentMember.username}
+                >
+                  <div className="w-5 h-5 bg-brand-500/30 rounded-full flex items-center justify-center text-xs font-bold text-brand-300">
+                    {currentMember.username.charAt(0).toUpperCase()}
+                  </div>
+                  <span className="hidden sm:flex items-center gap-1 text-xs">
+                    <Zap size={10} className="text-amber-400" />
+                    {currentMember.credits}
+                  </span>
+                </button>
+              ) : (
+                <button 
+                  onClick={() => setIsMemberLoginOpen(true)}
+                  className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 sm:py-2 rounded-full bg-dark-800 border border-dark-700 text-slate-300 hover:text-white hover:border-brand-500 transition-all text-xs font-medium"
+                  title={language === 'zh' ? '会员登录' : 'Member Login'}
+                >
+                  <LogIn size={14} />
+                  <span className="hidden sm:inline">{language === 'zh' ? '登录' : 'Login'}</span>
+                </button>
+              )}
+              
+              {/* Admin Panel (only for admins) */}
+              {isAdmin && (
+                <button 
+                  onClick={() => setIsAdminPanelOpen(true)}
+                  className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition-all"
+                  title={language === 'zh' ? '后台管理' : 'Admin Panel'}
+                >
+                  <Shield size={16} />
+                </button>
+              )}
+              
+              {/* Legacy Account (for site settings) */}
               <button 
                 onClick={() => setIsAccountOpen(true)}
                 className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-dark-800 border border-dark-700 text-slate-400 hover:text-white hover:border-brand-500 transition-all"

@@ -47,3 +47,66 @@ export interface GenerationResult {
   error: string | null;
   isLoading: boolean;
 }
+
+// ===== Member System Types =====
+
+export type MemberRole = 'user' | 'vip' | 'admin';
+export type PlanType = 'free' | 'basic' | 'pro' | 'enterprise';
+
+export interface Member {
+  id: string;
+  email: string;
+  username: string;
+  password: string; // In production, this should be hashed
+  avatar?: string;
+  role: MemberRole;
+  plan: PlanType;
+  credits: number;
+  totalCredits: number;
+  createdAt: string;
+  lastLoginAt: string;
+  expiresAt?: string; // Subscription expiry
+  isActive: boolean;
+}
+
+export interface Plan {
+  id: PlanType;
+  name: string;
+  nameZh: string;
+  price: number;
+  priceYearly: number;
+  credits: number;
+  features: string[];
+  featuresZh: string[];
+  popular?: boolean;
+}
+
+export interface PaymentRecord {
+  id: string;
+  memberId: string;
+  plan: PlanType;
+  amount: number;
+  currency: string;
+  status: 'pending' | 'completed' | 'failed' | 'refunded';
+  createdAt: string;
+  method: 'wechat' | 'alipay' | 'card' | 'other';
+}
+
+export interface UsageRecord {
+  id: string;
+  memberId: string;
+  type: 'generation' | 'edit' | 'upscale';
+  creditsUsed: number;
+  prompt?: string;
+  model?: string;
+  createdAt: string;
+}
+
+export interface AdminStats {
+  totalUsers: number;
+  activeUsers: number;
+  totalRevenue: number;
+  totalGenerations: number;
+  newUsersToday: number;
+  revenueToday: number;
+}

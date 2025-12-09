@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, BookOpen, ImageIcon, Wand2, Settings, Zap, Github, Bot, Palette, Smartphone } from 'lucide-react';
+import { X, BookOpen, ImageIcon, Wand2, Settings, Zap, Github, Bot, Palette, Smartphone, Users, Crown, Shield } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
 
 interface DocsModalProps {
@@ -205,6 +205,38 @@ export const DocsModal: React.FC<DocsModalProps> = ({ isOpen, onClose }) => {
                 <p className="text-sm text-slate-600">
                     {t('docs.responsive_desc')}
                 </p>
+            </section>
+
+            {/* Section 8: Member System */}
+            <section className="space-y-3">
+                 <h3 className="font-bold text-dark-800 flex items-center gap-2 text-base sm:text-lg">
+                    <Users size={18} className="text-brand-500"/> 
+                    {t('docs.member_system')}
+                </h3>
+                <p className="text-sm text-slate-600">
+                    {t('docs.member_desc')}
+                </p>
+                
+                <div className="grid gap-3 grid-cols-1 sm:grid-cols-2">
+                    <div className="border border-slate-200 bg-white rounded-lg p-3 shadow-sm">
+                        <div className="font-bold text-dark-900 text-sm mb-1 flex items-center gap-2">
+                            <Crown size={14} className="text-amber-500" />
+                            {t('docs.member_plans')}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                            {t('docs.member_plans_desc')}
+                        </div>
+                    </div>
+                    <div className="border border-red-200 bg-red-50/50 rounded-lg p-3 shadow-sm">
+                        <div className="font-bold text-dark-900 text-sm mb-1 flex items-center gap-2">
+                            <Shield size={14} className="text-red-500" />
+                            {t('docs.member_admin')}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                            {t('docs.member_admin_desc')}
+                        </div>
+                    </div>
+                </div>
             </section>
 
         </div>
