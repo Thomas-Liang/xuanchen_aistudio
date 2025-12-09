@@ -11,7 +11,7 @@ import {
     computeGitSha, 
     uploadToGitHub 
 } from '../services/githubService';
-import { FileSystemDirectoryHandle, getFilesFromDirectoryHandle } from '../utils/fileSystem';
+import { FileSystemDirectoryHandle, getFilesFromDirectoryHandle, saveDirectoryHandle, getSavedDirectoryHandle } from '../utils/fileSystem';
 
 interface GitHubSyncModalProps {
   isOpen: boolean;
@@ -74,6 +74,22 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Load saved handle on mount
+  useEffect(() => {
+    const loadHandle = async () => {
+        try {
+            const saved = await getSavedDirectoryHandle();
+            if (saved) {
+                setDirHandle(saved);
+                addBotLog(`Restored folder: ${saved.name}`, 'info');
+            }
+        } catch (e) {
+            console.warn("Failed to load saved directory handle", e);
+        }
+    };
+    loadHandle();
+  }, []);
+
   // ... (Keep existing useEffects) ...
   // Auto-login if token exists
   useEffect(() => {
@@ -89,26 +105,31 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
         setDiffResults([]);
         setLocalFiles([]);
         setErrorMsg('');
-        stopBot();
+        stopBot(false);
     }
   }, [isOpen]);
 
   // Cleanup bot on unmount
   useEffect(() => {
-      return () => stopBot();
+      return () => stopBot(false);
   }, []);
 
   const addBotLog = (message: string, type: BotLog['type'] = 'info') => {
       setBotLogs(prev => [{ timestamp: new Date(), message, type }, ...prev].slice(0, 50));
   };
 
-  const stopBot = () => {
+  const stopBot = (showLog = true) => {
       if (botTimerRef.current) {
           clearInterval(botTimerRef.current);
           botTimerRef.current = null;
       }
+      
+      // Only log if we were actually running or user forced it, AND showLog is true
+      if (botActive && showLog) {
+          addBotLog('Bot stopped.', 'info');
+      }
+      
       setBotActive(false);
-      addBotLog('Bot stopped.', 'info');
   };
 
   const startBot = async () => {
@@ -246,38 +267,10 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
       }
   };
 
-  // Manual File Select
-  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    // ... (Same as before logic, but verify e.target.files)
-    if (e.target.files && e.target.files.length > 0 && selectedRepo) {
-      setIsLoading(true);
-      setStatusText('Reading local files...');
-      setErrorMsg('');
-      
-      try {
-        const fileList = Array.from(e.target.files);
-        // ... Filter logic
-        const shouldIgnore = (path: string) => {
-            const p = path.replace(/\\/g, '/');
-            return p.includes('/node_modules/') || 
-                   p.includes('/.git/') || 
-                   p.includes('/dist/') ||
-                   p.includes('/build/') ||
-                   p.includes('/.next/') ||
-                   p.includes('/.DS_Store');
-        };
-
-        const entries: FileEntry[] = [];
-        const filteredFiles = fileList.filter(f => !shouldIgnore(f.webkitRelativePath));
-
-        // 1. Read and Hash Local Files
-        for (let i = 0; i < filteredFiles.length; i++) {
-            const file = filteredFiles[i];
-            const pathParts = file.webkitRelativePath.split('/');
-            // Strip root folder name
-            if (pathParts.length < 2) continue;
-            const relativePath = pathParts.slice(1).join('/');
-
+  // Helper: Process and hash files (shared between manual and bot)
+  const processFiles = async (fileList: { path: string, file: File }[]) => {
+      const entries: FileEntry[] = [];
+      for (const { path, file } of fileList) {
             const isBinary = file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || file.name.endsWith('.pdf') || file.name.endsWith('.zip');
             
             let content: string | ArrayBuffer;
@@ -285,16 +278,18 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
             else content = await file.text();
 
             const sha = await computeGitSha(content, isBinary);
-            entries.push({ path: relativePath, content, isBinary, sha });
-        }
+            entries.push({ path, content, isBinary, sha });
+      }
+      return entries;
+  };
 
+  // Helper: Compare with remote and update state
+  const analyzeChanges = async (entries: FileEntry[]) => {
         setLocalFiles(entries);
-
-        // 2. Fetch Remote Tree
-        setStatusText('Fetching remote comparison...');
-        const remoteMap = await getRemoteTree(token, selectedRepo.owner.login, selectedRepo.name, selectedBranch);
         
-        // 3. Compute Diff
+        setStatusText('Fetching remote comparison...');
+        const remoteMap = await getRemoteTree(token, selectedRepo!.owner.login, selectedRepo!.name, selectedBranch);
+        
         const results: DiffResult[] = [];
         for (const local of entries) {
             const remoteSha = remoteMap?.get(local.path);
@@ -308,6 +303,41 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
         }
         setDiffResults(results);
         setStep('diff');
+  };
+
+  // Manual File Select (Input)
+  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0 && selectedRepo) {
+      setIsLoading(true);
+      setStatusText('Reading local files...');
+      setErrorMsg('');
+      
+      try {
+        const rawFiles = Array.from(e.target.files);
+        const shouldIgnore = (path: string) => {
+            const p = path.replace(/\\/g, '/');
+            return p.includes('/node_modules/') || 
+                   p.includes('/.git/') || 
+                   p.includes('/dist/') ||
+                   p.includes('/build/') ||
+                   p.includes('/.next/') ||
+                   p.includes('/.DS_Store');
+        };
+
+        const normalizedFiles = rawFiles
+            .filter(f => !shouldIgnore(f.webkitRelativePath))
+            .map(f => {
+                const parts = f.webkitRelativePath.split('/');
+                return {
+                    path: parts.slice(1).join('/'), // strip root
+                    file: f
+                };
+            })
+            .filter(f => f.path); // remove empty paths (root files)
+
+        const entries = await processFiles(normalizedFiles);
+        await analyzeChanges(entries);
+
       } catch (err: any) {
         setErrorMsg(err.message);
       } finally {
@@ -315,6 +345,40 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
         setStatusText('');
       }
     }
+  };
+
+  // Combined Smart Select (Manual Mode)
+  const handleSmartSelect = async () => {
+      // @ts-ignore
+      if (typeof window.showDirectoryPicker === 'function') {
+          try {
+              // @ts-ignore
+              const handle = await window.showDirectoryPicker();
+              setDirHandle(handle);
+              await saveDirectoryHandle(handle);
+              
+              // Immediately process for manual mode
+              setIsLoading(true);
+              setStatusText('Reading local files...');
+              
+              const files = await getFilesFromDirectoryHandle(handle);
+              const entries = await processFiles(files);
+              await analyzeChanges(entries);
+              
+          } catch (e: any) {
+              if (e.name !== 'AbortError') {
+                  console.error(e);
+                  setErrorMsg('Failed to access folder via API. Trying fallback...');
+                  fileInputRef.current?.click();
+              }
+          } finally {
+              setIsLoading(false);
+              setStatusText('');
+          }
+      } else {
+          // Fallback for non-Chromium browsers
+          fileInputRef.current?.click();
+      }
   };
 
   // Bot Folder Select (Using File System Access API)
@@ -483,9 +547,14 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
                                 disabled={botActive}
                                 className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-slate-200"
                             >
+                                <option value={5}>Every 5 seconds (Fast)</option>
+                                <option value={10}>Every 10 seconds</option>
                                 <option value={30}>Every 30 seconds</option>
                                 <option value={60}>Every 1 minute</option>
                                 <option value={300}>Every 5 minutes</option>
+                                <option value={600}>Every 10 minutes</option>
+                                <option value={1800}>Every 30 minutes</option>
+                                <option value={3600}>Every 1 hour</option>
                             </select>
                          </div>
                     </div>
@@ -519,7 +588,7 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
                             </button>
                         ) : (
                             <button
-                                onClick={stopBot}
+                                onClick={() => stopBot(true)}
                                 className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-red-900/20"
                             >
                                 <Square size={18} fill="currentColor" />
@@ -653,32 +722,83 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
                             {/* Folder Picker */}
                             {selectedRepo && !isCreatingRepo && (
                                 <div className="pt-4 border-t border-dark-700">
-                                     <div 
-                                        onClick={() => fileInputRef.current?.click()}
-                                        className="cursor-pointer group p-8 bg-dark-900/50 rounded-xl border-2 border-dashed border-dark-600 hover:border-brand-500 transition-all flex flex-col items-center justify-center text-center"
-                                     >
-                                        <input
-                                            ref={fileInputRef}
-                                            type="file"
-                                            // @ts-ignore
-                                            webkitdirectory=""
-                                            directory=""
-                                            onChange={handleFolderSelect}
-                                            className="hidden"
-                                        />
-                                        {isLoading ? (
-                                            <div className="flex flex-col items-center gap-3">
-                                                <Loader2 className="animate-spin text-brand-500" size={32} />
-                                                <p className="text-slate-400 text-sm">{statusText || 'Processing...'}</p>
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <FolderInput size={32} className="text-slate-400 group-hover:text-brand-400 transition-colors mb-2" />
-                                                <h4 className="text-slate-200 font-medium">Select Project Folder</h4>
-                                                <p className="text-slate-500 text-xs mt-1">Click to analyze changes</p>
-                                            </>
-                                        )}
-                                     </div>
+                                     {dirHandle ? (
+                                         <div className="bg-dark-900/50 rounded-xl border border-brand-500/30 p-6 text-center space-y-4 animate-in fade-in zoom-in-95 duration-200">
+                                             <div className="mx-auto w-16 h-16 bg-brand-500/10 rounded-full flex items-center justify-center text-brand-500 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
+                                                 <FolderInput size={32} />
+                                             </div>
+                                             <div>
+                                                 <h4 className="text-white font-bold text-lg">{dirHandle.name}</h4>
+                                                 <p className="text-slate-500 text-sm">Folder automatically identified</p>
+                                             </div>
+                                             
+                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                                                 <button 
+                                                     onClick={async () => {
+                                                         setIsLoading(true);
+                                                         setStatusText('Scanning saved folder...');
+                                                         try {
+                                                             const hasPerm = await verifyPermission(dirHandle, false);
+                                                             if (!hasPerm) {
+                                                                 setErrorMsg('Permission check failed. Please re-select.');
+                                                                 setIsLoading(false);
+                                                                 return;
+                                                             }
+                                                             const files = await getFilesFromDirectoryHandle(dirHandle);
+                                                             const entries = await processFiles(files);
+                                                             await analyzeChanges(entries);
+                                                         } catch (e: any) {
+                                                             setErrorMsg(e.message);
+                                                         } finally {
+                                                             setIsLoading(false);
+                                                         }
+                                                     }}
+                                                     className="py-3 bg-[#2da44e] hover:bg-[#2c974b] text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-green-900/20 transition-all transform active:scale-95"
+                                                 >
+                                                     <ArrowRight size={18} />
+                                                     Scan Changes
+                                                 </button>
+                                                 <button 
+                                                     onClick={handleSmartSelect}
+                                                     className="py-3 bg-dark-800 hover:bg-dark-700 text-slate-300 hover:text-white border border-dark-600 rounded-xl font-medium transition-all"
+                                                 >
+                                                     Change Folder
+                                                 </button>
+                                             </div>
+                                         </div>
+                                     ) : (
+                                         <div 
+                                            onClick={handleSmartSelect}
+                                            className="cursor-pointer group p-8 bg-dark-900/50 rounded-xl border-2 border-dashed border-dark-600 hover:border-brand-500 transition-all flex flex-col items-center justify-center text-center"
+                                         >
+                                            <input
+                                                ref={fileInputRef}
+                                                type="file"
+                                                // @ts-ignore
+                                                webkitdirectory=""
+                                                directory=""
+                                                onChange={handleFolderSelect}
+                                                className="hidden"
+                                            />
+                                            {isLoading ? (
+                                                <div className="flex flex-col items-center gap-3">
+                                                    <Loader2 className="animate-spin text-brand-500" size={32} />
+                                                    <p className="text-slate-400 text-sm">{statusText || 'Processing...'}</p>
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <FolderInput size={32} className="text-slate-400 group-hover:text-brand-400 transition-colors mb-2" />
+                                                    <h4 className="text-slate-200 font-medium">Select Project Folder</h4>
+                                                    <p className="text-slate-500 text-xs mt-1">
+                                                        {typeof window.showDirectoryPicker === 'function' 
+                                                            ? 'Auto-detects using File System API' 
+                                                            : 'Click to analyze changes'
+                                                        }
+                                                    </p>
+                                                </>
+                                            )}
+                                         </div>
+                                     )}
                                 </div>
                             )}
                         </div>

@@ -4,6 +4,8 @@ export interface FileSystemHandle {
   kind: 'file' | 'directory';
   name: string;
   isSameEntry(other: FileSystemHandle): Promise<boolean>;
+  requestPermission(descriptor: { mode: 'read' | 'readwrite' }): Promise<'granted' | 'denied' | 'prompt'>;
+  queryPermission(descriptor: { mode: 'read' | 'readwrite' }): Promise<'granted' | 'denied' | 'prompt'>;
 }
 
 export interface FileSystemFileHandle extends FileSystemHandle {
@@ -46,3 +48,43 @@ export async function getFilesFromDirectoryHandle(
   return files;
 }
 
+// --- IndexedDB Helper for Persistence ---
+
+const DB_NAME = 'NanobananaStudioDB';
+const STORE_NAME = 'handles';
+
+const initDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+export const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
+  const db = await initDB();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.put(handle, 'project_root');
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+};
+
+export const getSavedDirectoryHandle = async (): Promise<FileSystemDirectoryHandle | null> => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const req = store.get('project_root');
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+};
