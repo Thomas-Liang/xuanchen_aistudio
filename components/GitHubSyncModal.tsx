@@ -158,7 +158,10 @@ export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClos
           });
 
           if (changes.length > 0) {
-              addBotLog(`Detected ${changes.length} changes. Pushing...`, 'info');
+              const fileNames = changes.map(c => c.path.split('/').pop()).slice(0, 3).join(', ');
+              const more = changes.length > 3 ? ` and ${changes.length - 3} more` : '';
+              addBotLog(`Detected ${changes.length} changes: ${fileNames}${more}`, 'info');
+              addBotLog('Pushing changes...', 'action');
               
               await uploadToGitHub(
                   { token, owner: selectedRepo.owner.login, repo: selectedRepo.name, branch: selectedBranch },
