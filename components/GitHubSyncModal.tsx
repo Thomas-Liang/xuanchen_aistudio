@@ -1,282 +1,770 @@
-import React, { useState, useRef } from 'react';
-import { Github, Upload, FolderInput, CheckCircle, AlertCircle, Loader2, Save } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Github, Upload, FolderInput, CheckCircle, AlertCircle, Loader2, Save, Plus, GitBranch, RefreshCw, FileDiff, ArrowRight, Lock, Globe, Bot, Play, Square, History } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
-import { parseRepoUrl, uploadToGitHub } from '../services/githubService';
+import { 
+    RepoInfo, 
+    FileEntry, 
+    getUserRepos, 
+    createRepository, 
+    getBranches, 
+    getRemoteTree, 
+    computeGitSha, 
+    uploadToGitHub 
+} from '../services/githubService';
+import { FileSystemDirectoryHandle, getFilesFromDirectoryHandle } from '../utils/fileSystem';
 
 interface GitHubSyncModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+type Mode = 'manual' | 'bot';
+type Step = 'auth' | 'repo_select' | 'diff' | 'sync';
+type FileStatus = 'new' | 'modified' | 'unchanged' | 'deleted'; 
+
+interface DiffResult {
+    path: string;
+    status: FileStatus;
+    fileEntry?: FileEntry;
+}
+
+interface BotLog {
+    timestamp: Date;
+    message: string;
+    type: 'info' | 'success' | 'error' | 'action';
+}
+
 export const GitHubSyncModal: React.FC<GitHubSyncModalProps> = ({ isOpen, onClose }) => {
-  const { t } = useLanguage(); // Assuming we can use t, or fallback to english strings
-  const [repoUrl, setRepoUrl] = useState('');
-  const [token, setToken] = useState(() => localStorage.getItem('github_token') || '');
-  const [message, setMessage] = useState('Update from Nanobanana Studio');
-  const [status, setStatus] = useState<'idle' | 'scanning' | 'uploading' | 'success' | 'error'>('idle');
-  const [progress, setProgress] = useState({ current: 0, total: 0, statusText: '' });
-  const [errorMsg, setErrorMsg] = useState('');
-  const [selectedFiles, setSelectedFiles] = useState<any[]>([]);
+  const { t } = useLanguage(); 
   
+  // -- Mode State --
+  const [mode, setMode] = useState<Mode>('manual');
+
+  // -- Auth State --
+  const [token, setToken] = useState(() => localStorage.getItem('github_token') || '');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // -- Repo State --
+  const [repos, setRepos] = useState<RepoInfo[]>([]);
+  const [selectedRepo, setSelectedRepo] = useState<RepoInfo | null>(null);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState('main');
+  const [isCreatingRepo, setIsCreatingRepo] = useState(false);
+  const [newRepoName, setNewRepoName] = useState('');
+  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+
+  // -- File/Diff State --
+  const [localFiles, setLocalFiles] = useState<FileEntry[]>([]);
+  const [diffResults, setDiffResults] = useState<DiffResult[]>([]);
+  
+  // -- Manual Operation State --
+  const [step, setStep] = useState<Step>('auth');
+  const [isLoading, setIsLoading] = useState(false);
+  const [statusText, setStatusText] = useState('');
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [errorMsg, setErrorMsg] = useState('');
+  const [commitMessage, setCommitMessage] = useState('Update from Nanobanana Studio');
+
+  // -- Bot State --
+  const [botActive, setBotActive] = useState(false);
+  const [botLogs, setBotLogs] = useState<BotLog[]>([]);
+  const [botInterval, setBotInterval] = useState(60); // seconds
+  const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const botTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ... (Keep existing useEffects) ...
+  // Auto-login if token exists
+  useEffect(() => {
+      if (isOpen && token && !isAuthenticated && repos.length === 0) {
+          handleConnect();
+      }
+  }, [isOpen]);
+
+  // Reset when closed
+  useEffect(() => {
+    if (!isOpen) {
+        setStep('auth');
+        setDiffResults([]);
+        setLocalFiles([]);
+        setErrorMsg('');
+        stopBot();
+    }
+  }, [isOpen]);
+
+  // Cleanup bot on unmount
+  useEffect(() => {
+      return () => stopBot();
+  }, []);
+
+  const addBotLog = (message: string, type: BotLog['type'] = 'info') => {
+      setBotLogs(prev => [{ timestamp: new Date(), message, type }, ...prev].slice(0, 50));
+  };
+
+  const stopBot = () => {
+      if (botTimerRef.current) {
+          clearInterval(botTimerRef.current);
+          botTimerRef.current = null;
+      }
+      setBotActive(false);
+      addBotLog('Bot stopped.', 'info');
+  };
+
+  const startBot = async () => {
+      if (!selectedRepo || !dirHandle) {
+          setErrorMsg('Please select a repository and a local folder first.');
+          return;
+      }
+      
+      setBotActive(true);
+      addBotLog(`Bot started. Watching for changes every ${botInterval}s...`, 'success');
+      
+      // Immediate first run
+      await runBotCycle();
+
+      // Interval run
+      botTimerRef.current = setInterval(async () => {
+          await runBotCycle();
+      }, botInterval * 1000);
+  };
+
+  const runBotCycle = async () => {
+      if (!dirHandle || !selectedRepo) return;
+      
+      addBotLog('Scanning for changes...', 'action');
+      
+      try {
+          // 1. Read Files using Handle
+          const files = await getFilesFromDirectoryHandle(dirHandle);
+          const entries: FileEntry[] = [];
+          
+          for (const { path, file } of files) {
+             const isBinary = file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || file.name.endsWith('.pdf') || file.name.endsWith('.zip');
+             let content: string | ArrayBuffer;
+             if (isBinary) content = await file.arrayBuffer();
+             else content = await file.text();
+             
+             const sha = await computeGitSha(content, isBinary);
+             entries.push({ path, content, isBinary, sha });
+          }
+
+          // 2. Compare with Remote
+          const remoteMap = await getRemoteTree(token, selectedRepo.owner.login, selectedRepo.name, selectedBranch);
+          
+          const changes = entries.filter(local => {
+             const remoteSha = remoteMap?.get(local.path);
+             return !remoteSha || remoteSha !== local.sha;
+          });
+
+          if (changes.length > 0) {
+              addBotLog(`Detected ${changes.length} changes. Pushing...`, 'info');
+              
+              await uploadToGitHub(
+                  { token, owner: selectedRepo.owner.login, repo: selectedRepo.name, branch: selectedBranch },
+                  changes,
+                  `Auto-save by Bot at ${new Date().toLocaleTimeString()}`,
+                  (c, t, s) => {} // Silent progress for bot
+              );
+              
+              addBotLog('Successfully pushed changes to GitHub.', 'success');
+          } else {
+              addBotLog('No changes detected.', 'info');
+          }
+
+      } catch (e: any) {
+          addBotLog(`Error: ${e.message}`, 'error');
+          // Don't stop bot on error, just log it
+      }
+  };
+
+  const handleConnect = async () => {
+      if (!token) return;
+      setIsLoading(true);
+      setErrorMsg('');
+      try {
+          const repoList = await getUserRepos(token);
+          setRepos(repoList);
+          setIsAuthenticated(true);
+          // Don't change step here if already in bot mode
+          if (step === 'auth') setStep('repo_select');
+          localStorage.setItem('github_token', token);
+      } catch (e: any) {
+          setErrorMsg(e.message);
+          setIsAuthenticated(false);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  const handleCreateRepo = async () => {
+      // ... (Same as before)
+      if (!newRepoName) return;
+      setIsLoading(true);
+      setErrorMsg('');
+      try {
+          const newRepo = await createRepository(token, newRepoName, newRepoPrivate);
+          setRepos([newRepo, ...repos]);
+          setSelectedRepo(newRepo);
+          setSelectedBranch(newRepo.default_branch || 'main');
+          setBranches([newRepo.default_branch || 'main']);
+          setIsCreatingRepo(false);
+          setNewRepoName('');
+      } catch (e: any) {
+          setErrorMsg(e.message);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  const handleRepoSelect = async (repoId: string) => {
+      // ... (Same as before)
+      const repo = repos.find(r => r.id.toString() === repoId);
+      if (!repo) return;
+      
+      setSelectedRepo(repo);
+      setIsLoading(true);
+      setBranches([]);
+      
+      try {
+          const branchList = await getBranches(token, repo.owner.login, repo.name);
+          setBranches(branchList);
+          if (branchList.includes(repo.default_branch)) {
+              setSelectedBranch(repo.default_branch);
+          } else if (branchList.length > 0) {
+              setSelectedBranch(branchList[0]);
+          } else {
+             setSelectedBranch('main'); // Empty repo
+          }
+      } catch (e) {
+          console.error(e);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  // Manual File Select
+  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // ... (Same as before logic, but verify e.target.files)
+    if (e.target.files && e.target.files.length > 0 && selectedRepo) {
+      setIsLoading(true);
+      setStatusText('Reading local files...');
+      setErrorMsg('');
+      
+      try {
+        const fileList = Array.from(e.target.files);
+        // ... Filter logic
+        const shouldIgnore = (path: string) => {
+            const p = path.replace(/\\/g, '/');
+            return p.includes('/node_modules/') || 
+                   p.includes('/.git/') || 
+                   p.includes('/dist/') ||
+                   p.includes('/build/') ||
+                   p.includes('/.next/') ||
+                   p.includes('/.DS_Store');
+        };
+
+        const entries: FileEntry[] = [];
+        const filteredFiles = fileList.filter(f => !shouldIgnore(f.webkitRelativePath));
+
+        // 1. Read and Hash Local Files
+        for (let i = 0; i < filteredFiles.length; i++) {
+            const file = filteredFiles[i];
+            const pathParts = file.webkitRelativePath.split('/');
+            // Strip root folder name
+            if (pathParts.length < 2) continue;
+            const relativePath = pathParts.slice(1).join('/');
+
+            const isBinary = file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || file.name.endsWith('.pdf') || file.name.endsWith('.zip');
+            
+            let content: string | ArrayBuffer;
+            if (isBinary) content = await file.arrayBuffer();
+            else content = await file.text();
+
+            const sha = await computeGitSha(content, isBinary);
+            entries.push({ path: relativePath, content, isBinary, sha });
+        }
+
+        setLocalFiles(entries);
+
+        // 2. Fetch Remote Tree
+        setStatusText('Fetching remote comparison...');
+        const remoteMap = await getRemoteTree(token, selectedRepo.owner.login, selectedRepo.name, selectedBranch);
+        
+        // 3. Compute Diff
+        const results: DiffResult[] = [];
+        for (const local of entries) {
+            const remoteSha = remoteMap?.get(local.path);
+            if (!remoteSha) {
+                results.push({ path: local.path, status: 'new', fileEntry: local });
+            } else if (remoteSha !== local.sha) {
+                results.push({ path: local.path, status: 'modified', fileEntry: local });
+            } else {
+                results.push({ path: local.path, status: 'unchanged' });
+            }
+        }
+        setDiffResults(results);
+        setStep('diff');
+      } catch (err: any) {
+        setErrorMsg(err.message);
+      } finally {
+        setIsLoading(false);
+        setStatusText('');
+      }
+    }
+  };
+
+  // Bot Folder Select (Using File System Access API)
+  const handleBotFolderSelect = async () => {
+      try {
+          // @ts-ignore - showDirectoryPicker is experimental/new
+          const handle = await window.showDirectoryPicker();
+          setDirHandle(handle);
+          addBotLog(`Selected directory: ${handle.name}`, 'info');
+      } catch (e: any) {
+          if (e.name !== 'AbortError') {
+              setErrorMsg('File System Access API not supported or denied. Please use Chrome/Edge.');
+          }
+      }
+  };
+
+  const handlePush = async () => {
+      // ... (Same as before)
+      if (!selectedRepo) return;
+      
+      const filesToUpload = diffResults
+          .filter(d => (d.status === 'new' || d.status === 'modified') && d.fileEntry)
+          .map(d => d.fileEntry!);
+
+      if (filesToUpload.length === 0) {
+          setErrorMsg("No changes to push.");
+          return;
+      }
+
+      setIsLoading(true);
+      setStep('sync');
+      
+      try {
+          await uploadToGitHub(
+              { token, owner: selectedRepo.owner.login, repo: selectedRepo.name, branch: selectedBranch },
+              filesToUpload,
+              commitMessage,
+              (current, total, text) => {
+                  setProgress({ current, total });
+                  setStatusText(text);
+              }
+          );
+          
+          setStatusText('Success!');
+          setTimeout(() => {
+              onClose();
+          }, 1500);
+
+      } catch (e: any) {
+          setErrorMsg(e.message);
+          setStep('diff'); 
+      } finally {
+          setIsLoading(false);
+      }
+  };
 
   if (!isOpen) return null;
 
-  const handleFolderSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const fileList = Array.from(e.target.files);
-      
-      const shouldIgnore = (path: string) => {
-          const p = path.replace(/\\/g, '/');
-          // Ignore patterns
-          return p.includes('/node_modules/') || 
-                 p.includes('/.git/') || 
-                 p.includes('/dist/') ||
-                 p.includes('/build/') ||
-                 p.includes('/.next/') ||
-                 p.includes('/.DS_Store');
-      };
-
-      // Filter out node_modules and .git to prevent massive uploads/hanging
-      const filtered = fileList.filter(f => !shouldIgnore(f.webkitRelativePath));
-      
-      setSelectedFiles(filtered);
-      setStatus('idle');
-    }
-  };
-
-  const handleSync = async () => {
-    if (!repoUrl || !token || selectedFiles.length === 0) {
-      setErrorMsg('Please fill in all fields and select a folder.');
-      return;
-    }
-
-    const repoInfo = parseRepoUrl(repoUrl);
-    if (!repoInfo) {
-      setErrorMsg('Invalid repository URL.');
-      return;
-    }
-
-    // Save token
-    localStorage.setItem('github_token', token);
-
-    setStatus('scanning');
-    setErrorMsg('');
-
-    try {
-      // 1. Read files
-      const filesToUpload = [];
-      const total = selectedFiles.length;
-      
-      for (let i = 0; i < total; i++) {
-        const file = selectedFiles[i];
-        setProgress({ current: i + 1, total, statusText: `Reading ${file.name}...` });
-        
-        // Simple heuristic for binary files
-        const isBinary = file.type.startsWith('image/') || file.type.startsWith('audio/') || file.type.startsWith('video/') || file.name.endsWith('.pdf') || file.name.endsWith('.zip');
-        
-        let content;
-        if (isBinary) {
-            content = await file.arrayBuffer();
-        } else {
-            content = await file.text();
-        }
-
-        // Remove the root folder name from the path if preferred, or keep it.
-        // webkitRelativePath is usually "FolderName/sub/file.ext"
-        // We probably want to strip "FolderName/" to put contents at root of repo, 
-        const pathParts = file.webkitRelativePath.split('/');
-        
-        // If the path is somehow invalid or just the root folder name
-        if (pathParts.length < 2) continue;
-
-        const relativePath = pathParts.slice(1).join('/');
-        
-        // Double check ignoring logic in case
-        if (relativePath.includes('node_modules/') || relativePath.startsWith('.git/')) {
-            continue;
-        }
-        
-        if (relativePath) { // Skip if it's just the root folder itself somehow
-            filesToUpload.push({
-                path: relativePath,
-                content,
-                isBinary
-            });
-        }
-      }
-
-      setStatus('uploading');
-      
-      await uploadToGitHub(
-        { ...repoInfo, token, branch: 'main' },
-        filesToUpload,
-        message,
-        (current, total, statusText) => {
-            setProgress({ current, total, statusText });
-        }
-      );
-
-      setStatus('success');
-      setTimeout(() => {
-          onClose();
-          setStatus('idle');
-          setSelectedFiles([]);
-      }, 2000);
-
-    } catch (err: any) {
-      console.error(err);
-      setStatus('error');
-      setErrorMsg(err.message || 'Upload failed');
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-dark-800 border border-dark-700 rounded-2xl w-full max-w-lg shadow-2xl p-6 space-y-6">
-        <div className="flex items-center justify-between border-b border-dark-700 pb-4">
-          <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-            <Github className="text-white" />
-            GitHub Sync
-          </h2>
-          <button 
-            onClick={onClose}
-            className="text-slate-400 hover:text-white transition-colors"
-          >
-            ✕
-          </button>
+      <div className="bg-dark-800 border border-dark-700 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        
+        {/* Header */}
+        <div className="p-4 border-b border-dark-700 flex justify-between items-center bg-dark-900/50">
+          <div className="flex items-center gap-4">
+              <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+                <Github className="text-white" />
+                GitHub Sync
+              </h2>
+              {/* Mode Toggle */}
+              <div className="flex bg-dark-800 p-1 rounded-lg border border-dark-700">
+                  <button 
+                    onClick={() => setMode('manual')}
+                    className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${mode === 'manual' ? 'bg-dark-700 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                  >
+                      Manual
+                  </button>
+                  <button 
+                    onClick={() => setMode('bot')}
+                    className={`px-3 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-1 ${mode === 'bot' ? 'bg-brand-500/20 text-brand-400 border border-brand-500/30' : 'text-slate-500 hover:text-slate-300'}`}
+                  >
+                      <Bot size={12} />
+                      Auto Bot
+                  </button>
+              </div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
         </div>
 
-        <div className="space-y-4">
-           {/* Repo URL */}
-           <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1">
-                Repository URL
-              </label>
-              <input
-                type="text"
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/username/repo"
-                className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-2 text-slate-200 focus:border-brand-500 focus:outline-none"
-              />
-           </div>
+        {/* Content Area */}
+        <div className="flex-1 overflow-y-auto p-6 scrollbar-thin">
+            
+            {/* Error Banner */}
+            {errorMsg && (
+                <div className="mb-4 flex items-start gap-2 text-red-400 text-sm bg-red-500/10 p-3 rounded-lg">
+                    <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                    <span>{errorMsg}</span>
+                </div>
+            )}
 
-           {/* Token */}
-           <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1">
-                Personal Access Token (Repo Scope)
-              </label>
-              <input
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="ghp_..."
-                className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-2 text-slate-200 focus:border-brand-500 focus:outline-none"
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Token is saved locally. Never share your token.
-              </p>
-           </div>
-
-           {/* Commit Message */}
-           <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1">
-                Commit Message
-              </label>
-              <input
-                type="text"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-2 text-slate-200 focus:border-brand-500 focus:outline-none"
-              />
-           </div>
-
-           {/* File Selection */}
-           <div className="p-4 bg-dark-900/50 rounded-xl border border-dashed border-dark-600 flex flex-col items-center justify-center text-center">
-              <input
-                ref={fileInputRef}
-                type="file"
-                // @ts-ignore - webkitdirectory is non-standard but widely supported
-                webkitdirectory=""
-                directory=""
-                onChange={handleFolderSelect}
-                className="hidden"
-              />
-              
-              {selectedFiles.length > 0 ? (
-                <div className="flex flex-col items-center gap-2 text-green-400">
-                    <CheckCircle size={24} />
-                    <span className="font-medium">{selectedFiles.length} files selected</span>
-                    <button 
-                        onClick={() => fileInputRef.current?.click()}
-                        className="text-xs text-slate-500 underline hover:text-slate-300"
+            {step === 'auth' ? (
+                // Auth View (Shared)
+                <div className="space-y-4">
+                    <div className="text-center pb-4">
+                        <Github size={48} className="mx-auto text-slate-500 mb-2" />
+                        <h3 className="text-lg font-medium text-white">Connect to GitHub</h3>
+                        <p className="text-slate-400 text-sm">Enter your Personal Access Token with 'repo' scope.</p>
+                    </div>
+                    <div className="space-y-2">
+                         <label className="text-sm font-medium text-slate-300">Personal Access Token</label>
+                         <input
+                             type="password"
+                             value={token}
+                             onChange={(e) => setToken(e.target.value)}
+                             className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-slate-200 focus:border-brand-500 focus:outline-none"
+                             placeholder="ghp_..."
+                         />
+                    </div>
+                    <button
+                        onClick={handleConnect}
+                        disabled={isLoading || !token}
+                        className="w-full py-3 bg-brand-500 hover:bg-brand-600 text-white rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                     >
-                        Change Selection
+                        {isLoading ? <Loader2 className="animate-spin" /> : <ArrowRight />}
+                        Connect
                     </button>
                 </div>
-              ) : (
-                <button 
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors"
-                >
-                    <FolderInput size={32} />
-                    <span className="text-sm">Select Project Folder</span>
-                </button>
-              )}
-           </div>
+            ) : mode === 'bot' ? (
+                // --- BOT MODE ---
+                <div className="space-y-6 animate-in fade-in">
+                    <div className="bg-brand-500/5 border border-brand-500/20 rounded-xl p-4 flex items-start gap-3">
+                        <Bot className="text-brand-400 mt-1" size={20} />
+                        <div>
+                            <h4 className="text-brand-400 font-bold text-sm">Automated Watch Mode</h4>
+                            <p className="text-slate-400 text-xs mt-1">
+                                The bot will monitor your selected local folder and automatically push changes to GitHub at the specified interval.
+                                <br/>
+                                <span className="opacity-70 italic">Note: Requires 'Edit' permissions on the folder (Chrome/Edge only).</span>
+                            </p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                         {/* Repo Select */}
+                         <div className="space-y-2">
+                             <label className="text-xs font-bold text-slate-500 uppercase">Target Repository</label>
+                             <select
+                                value={selectedRepo?.id || ''}
+                                onChange={(e) => handleRepoSelect(e.target.value)}
+                                disabled={botActive}
+                                className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-slate-200"
+                            >
+                                <option value="" disabled>Select Repo...</option>
+                                {repos.map(r => (
+                                    <option key={r.id} value={r.id}>{r.full_name}</option>
+                                ))}
+                            </select>
+                         </div>
+                         
+                         {/* Interval */}
+                         <div className="space-y-2">
+                             <label className="text-xs font-bold text-slate-500 uppercase">Check Interval</label>
+                             <select
+                                value={botInterval}
+                                onChange={(e) => setBotInterval(Number(e.target.value))}
+                                disabled={botActive}
+                                className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-slate-200"
+                            >
+                                <option value={30}>Every 30 seconds</option>
+                                <option value={60}>Every 1 minute</option>
+                                <option value={300}>Every 5 minutes</option>
+                            </select>
+                         </div>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-xs font-bold text-slate-500 uppercase">Local Watch Folder</label>
+                        <button 
+                            onClick={handleBotFolderSelect}
+                            disabled={botActive}
+                            className={`w-full py-3 px-4 rounded-xl border-2 border-dashed flex items-center justify-center gap-2 transition-all ${
+                                dirHandle 
+                                ? 'border-brand-500/50 bg-brand-500/5 text-brand-400' 
+                                : 'border-dark-600 bg-dark-900/50 text-slate-400 hover:border-slate-500'
+                            }`}
+                        >
+                            <FolderInput size={20} />
+                            {dirHandle ? dirHandle.name : 'Select Folder to Watch...'}
+                        </button>
+                    </div>
+
+                    {/* Bot Controls */}
+                    <div className="flex gap-3 pt-2">
+                        {!botActive ? (
+                            <button
+                                onClick={startBot}
+                                disabled={!dirHandle || !selectedRepo}
+                                className="flex-1 py-3 bg-[#2da44e] hover:bg-[#2c974b] text-white rounded-xl font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-green-900/20"
+                            >
+                                <Play size={18} fill="currentColor" />
+                                Start Bot
+                            </button>
+                        ) : (
+                            <button
+                                onClick={stopBot}
+                                className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-red-900/20"
+                            >
+                                <Square size={18} fill="currentColor" />
+                                Stop Bot
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Terminal Log */}
+                    <div className="bg-black/40 rounded-xl border border-dark-700 p-4 font-mono text-xs h-48 overflow-y-auto">
+                        <div className="flex items-center gap-2 text-slate-500 mb-2 border-b border-dark-700 pb-2">
+                            <History size={12} />
+                            <span>Activity Log</span>
+                        </div>
+                        <div className="space-y-1">
+                            {botLogs.length === 0 && <span className="text-slate-600 italic">Waiting to start...</span>}
+                            {botLogs.map((log, i) => (
+                                <div key={i} className="flex gap-2">
+                                    <span className="text-slate-600">[{log.timestamp.toLocaleTimeString()}]</span>
+                                    <span className={`
+                                        ${log.type === 'error' ? 'text-red-400' : ''}
+                                        ${log.type === 'success' ? 'text-green-400' : ''}
+                                        ${log.type === 'action' ? 'text-brand-400' : ''}
+                                        ${log.type === 'info' ? 'text-slate-300' : ''}
+                                    `}>
+                                        {log.message}
+                                    </span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                // --- MANUAL MODE (Existing) ---
+                <div className="space-y-6">
+                    {step === 'repo_select' && (
+                         <div className="space-y-6">
+                            {/* Repo Selector */}
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium text-slate-300 flex justify-between">
+                                    Repository
+                                    <button 
+                                        onClick={() => setIsCreatingRepo(!isCreatingRepo)}
+                                        className="text-brand-400 text-xs hover:underline flex items-center gap-1"
+                                    >
+                                        <Plus size={12} /> New Repository
+                                    </button>
+                                </label>
+        
+                                {isCreatingRepo ? (
+                                    <div className="p-4 bg-dark-900 rounded-xl border border-dark-700 space-y-3 animate-in fade-in slide-in-from-top-2">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-sm font-bold text-white">Create New Repository</span>
+                                            <button onClick={() => setIsCreatingRepo(false)} className="text-xs text-slate-500">Cancel</button>
+                                        </div>
+                                        <input
+                                            type="text"
+                                            value={newRepoName}
+                                            onChange={(e) => setNewRepoName(e.target.value)}
+                                            placeholder="Repository Name"
+                                            className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-slate-200"
+                                        />
+                                        <div className="flex gap-4">
+                                            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                                                <input 
+                                                    type="radio" 
+                                                    checked={newRepoPrivate} 
+                                                    onChange={() => setNewRepoPrivate(true)} 
+                                                    className="text-brand-500"
+                                                />
+                                                <Lock size={14} /> Private
+                                            </label>
+                                            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                                                <input 
+                                                    type="radio" 
+                                                    checked={!newRepoPrivate} 
+                                                    onChange={() => setNewRepoPrivate(false)} 
+                                                    className="text-brand-500"
+                                                />
+                                                <Globe size={14} /> Public
+                                            </label>
+                                        </div>
+                                        <button
+                                            onClick={handleCreateRepo}
+                                            disabled={isLoading || !newRepoName}
+                                            className="w-full py-2 bg-brand-500 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+                                        >
+                                            {isLoading ? 'Creating...' : 'Create Repository'}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <select
+                                        value={selectedRepo?.id || ''}
+                                        onChange={(e) => handleRepoSelect(e.target.value)}
+                                        className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-slate-200 focus:border-brand-500 focus:outline-none"
+                                    >
+                                        <option value="" disabled>Select a repository...</option>
+                                        {repos.map(r => (
+                                            <option key={r.id} value={r.id}>{r.full_name} ({r.private ? 'Private' : 'Public'})</option>
+                                        ))}
+                                    </select>
+                                )}
+                            </div>
+        
+                            {/* Branch Selector */}
+                            {selectedRepo && !isCreatingRepo && (
+                                 <div className="space-y-2">
+                                    <label className="text-sm font-medium text-slate-300">Branch</label>
+                                    <div className="flex gap-2">
+                                        <select
+                                            value={selectedBranch}
+                                            onChange={(e) => setSelectedBranch(e.target.value)}
+                                            className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-3 text-slate-200 focus:border-brand-500 focus:outline-none"
+                                        >
+                                            {branches.map(b => (
+                                                <option key={b} value={b}>{b}</option>
+                                            ))}
+                                            {branches.length === 0 && <option value="main">main (default)</option>}
+                                        </select>
+                                        <button 
+                                            onClick={() => handleRepoSelect(selectedRepo.id.toString())}
+                                            className="p-3 bg-dark-900 border border-dark-700 rounded-xl text-slate-400 hover:text-white"
+                                            title="Refresh Branches"
+                                        >
+                                            <RefreshCw size={20} className={isLoading ? "animate-spin" : ""} />
+                                        </button>
+                                    </div>
+                                 </div>
+                            )}
+        
+                            {/* Folder Picker */}
+                            {selectedRepo && !isCreatingRepo && (
+                                <div className="pt-4 border-t border-dark-700">
+                                     <div 
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="cursor-pointer group p-8 bg-dark-900/50 rounded-xl border-2 border-dashed border-dark-600 hover:border-brand-500 transition-all flex flex-col items-center justify-center text-center"
+                                     >
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            // @ts-ignore
+                                            webkitdirectory=""
+                                            directory=""
+                                            onChange={handleFolderSelect}
+                                            className="hidden"
+                                        />
+                                        {isLoading ? (
+                                            <div className="flex flex-col items-center gap-3">
+                                                <Loader2 className="animate-spin text-brand-500" size={32} />
+                                                <p className="text-slate-400 text-sm">{statusText || 'Processing...'}</p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <FolderInput size={32} className="text-slate-400 group-hover:text-brand-400 transition-colors mb-2" />
+                                                <h4 className="text-slate-200 font-medium">Select Project Folder</h4>
+                                                <p className="text-slate-500 text-xs mt-1">Click to analyze changes</p>
+                                            </>
+                                        )}
+                                     </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+        
+                    {step === 'diff' && (
+                        <div className="space-y-4 h-full flex flex-col">
+                             <div className="flex items-center justify-between">
+                                 <h3 className="text-white font-medium flex items-center gap-2">
+                                     <FileDiff size={18} className="text-brand-400" />
+                                     Changes Detected
+                                 </h3>
+                                 <button onClick={() => setStep('repo_select')} className="text-xs text-slate-500 hover:text-white">
+                                     Change Folder
+                                 </button>
+                             </div>
+        
+                             <div className="bg-dark-900 rounded-xl border border-dark-700 overflow-hidden flex-1 min-h-[200px] overflow-y-auto">
+                                 {diffResults.filter(d => d.status !== 'unchanged').length === 0 ? (
+                                     <div className="h-full flex flex-col items-center justify-center p-8 text-slate-500">
+                                         <CheckCircle size={32} className="mb-2 text-green-500/50" />
+                                         <p>Your local folder matches the remote branch.</p>
+                                         <p className="text-xs">No changes to push.</p>
+                                     </div>
+                                 ) : (
+                                     <table className="w-full text-sm text-left">
+                                         <thead className="bg-dark-800 text-slate-400 font-medium text-xs uppercase">
+                                             <tr>
+                                                 <th className="px-4 py-2">Status</th>
+                                                 <th className="px-4 py-2">File</th>
+                                             </tr>
+                                         </thead>
+                                         <tbody className="divide-y divide-dark-800">
+                                             {diffResults.filter(d => d.status !== 'unchanged').map((diff) => (
+                                                 <tr key={diff.path} className="hover:bg-dark-800/50">
+                                                     <td className="px-4 py-2 w-20">
+                                                         {diff.status === 'new' && <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2 py-0.5 rounded">NEW</span>}
+                                                         {diff.status === 'modified' && <span className="text-xs font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded">MOD</span>}
+                                                     </td>
+                                                     <td className="px-4 py-2 text-slate-300 font-mono text-xs truncate max-w-[300px]" title={diff.path}>
+                                                         {diff.path}
+                                                     </td>
+                                                 </tr>
+                                             ))}
+                                         </tbody>
+                                     </table>
+                                 )}
+                             </div>
+        
+                             <div className="space-y-3 pt-2">
+                                 <input
+                                    type="text"
+                                    value={commitMessage}
+                                    onChange={(e) => setCommitMessage(e.target.value)}
+                                    placeholder="Commit message..."
+                                    className="w-full bg-dark-900 border border-dark-700 rounded-xl px-4 py-2 text-slate-200 text-sm focus:border-brand-500 focus:outline-none"
+                                 />
+                                 <button
+                                    onClick={handlePush}
+                                    disabled={diffResults.filter(d => d.status !== 'unchanged').length === 0}
+                                    className="w-full py-3 bg-[#2da44e] hover:bg-[#2c974b] text-white rounded-xl font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg shadow-green-900/20"
+                                 >
+                                     <Upload size={18} />
+                                     Push Changes
+                                 </button>
+                             </div>
+                        </div>
+                    )}
+        
+                    {step === 'sync' && (
+                        <div className="h-full flex flex-col items-center justify-center space-y-6 py-8">
+                             <div className="relative">
+                                <div className="w-20 h-20 border-4 border-dark-700 border-t-brand-500 rounded-full animate-spin"></div>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <span className="text-xs font-bold text-brand-500">
+                                        {progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0}%
+                                    </span>
+                                </div>
+                             </div>
+                             <div className="text-center space-y-2">
+                                 <h3 className="text-xl font-semibold text-white">Pushing to GitHub...</h3>
+                                 <p className="text-slate-400 text-sm">{statusText}</p>
+                             </div>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
-
-        {errorMsg && (
-            <div className="flex items-start gap-2 text-red-400 text-sm bg-red-500/10 p-3 rounded-lg break-words">
-                <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                <span>
-                    {errorMsg.includes('403') || errorMsg.includes('Resource not accessible') 
-                        ? 'Permission Denied (403). Your Token does not have "repo" or "workflow" scope, or the Token has expired. Please regenerate a Classic Token with "repo" checkbox selected.'
-                        : errorMsg
-                    }
-                </span>
-            </div>
-        )}
-
-        {status === 'uploading' || status === 'scanning' ? (
-            <div className="space-y-2">
-                <div className="flex justify-between text-xs text-slate-400">
-                    <span>{progress.statusText}</span>
-                    <span>{Math.round((progress.current / progress.total) * 100)}%</span>
-                </div>
-                <div className="h-2 bg-dark-900 rounded-full overflow-hidden">
-                    <div 
-                        className="h-full bg-brand-500 transition-all duration-300"
-                        style={{ width: `${(progress.current / progress.total) * 100}%` }}
-                    />
-                </div>
-            </div>
-        ) : (
-            <button
-                onClick={handleSync}
-                disabled={status !== 'idle' || selectedFiles.length === 0}
-                className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all ${
-                    status !== 'idle' || selectedFiles.length === 0
-                    ? 'bg-dark-700 text-slate-500 cursor-not-allowed' 
-                    : 'bg-[#2da44e] text-white hover:bg-[#2c974b] shadow-lg shadow-green-900/20'
-                }`}
-            >
-                {status === 'success' ? (
-                    <>
-                        <CheckCircle size={20} />
-                        Synced Successfully
-                    </>
-                ) : (
-                    <>
-                        <Upload size={20} />
-                        Push to GitHub
-                    </>
-                )}
-            </button>
-        )}
       </div>
     </div>
   );
 };
-

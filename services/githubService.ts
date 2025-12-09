@@ -7,10 +7,24 @@ interface GitHubConfig {
   branch?: string;
 }
 
-interface FileEntry {
+export interface FileEntry {
   path: string;
   content: string | ArrayBuffer;
   isBinary: boolean;
+  sha?: string; // For diffing
+}
+
+export interface RepoInfo {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  permissions?: {
+      admin: boolean;
+      push: boolean;
+      pull: boolean;
+  }
 }
 
 export const parseRepoUrl = (url: string) => {
@@ -24,7 +38,6 @@ export const parseRepoUrl = (url: string) => {
       };
     }
   } catch (e) {
-    // Try parsing user/repo format
     const parts = url.split('/');
     if (parts.length === 2) {
       return {
@@ -45,6 +58,118 @@ const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+};
+
+// Calculate Git SHA-1 for a file (blob)
+// Git header: "blob <size>\0<content>"
+export const computeGitSha = async (content: string | ArrayBuffer, isBinary: boolean): Promise<string> => {
+    let data: Uint8Array;
+    
+    if (isBinary) {
+        data = new Uint8Array(content as ArrayBuffer);
+    } else {
+        const encoder = new TextEncoder();
+        data = encoder.encode(content as string);
+    }
+
+    const header = `blob ${data.length}\0`;
+    const headerData = new TextEncoder().encode(header);
+    
+    // Concatenate header + body
+    const fullData = new Uint8Array(headerData.length + data.length);
+    fullData.set(headerData);
+    fullData.set(data, headerData.length);
+
+    const hashBuffer = await crypto.subtle.digest('SHA-1', fullData);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+// --- New API Methods ---
+
+export const getUserRepos = async (token: string): Promise<RepoInfo[]> => {
+    // Fetch user repos (sorted by updated, 100 max per page)
+    const res = await fetch('https://api.github.com/user/repos?sort=updated&per_page=100&type=all', {
+        headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+        }
+    });
+    
+    if (!res.ok) {
+        if (res.status === 401) throw new Error("Invalid Token");
+        throw new Error("Failed to fetch repositories");
+    }
+    
+    return await res.json();
+};
+
+export const createRepository = async (token: string, name: string, isPrivate: boolean): Promise<RepoInfo> => {
+    const res = await fetch('https://api.github.com/user/repos', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/vnd.github.v3+json',
+        },
+        body: JSON.stringify({
+            name,
+            private: isPrivate,
+            auto_init: true, // create README so main branch exists
+            description: "Created via Nanobanana Studio"
+        })
+    });
+
+    if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Failed to create repository");
+    }
+
+    return await res.json();
+};
+
+export const getBranches = async (token: string, owner: string, repo: string): Promise<string[]> => {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/branches`, {
+        headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+        }
+    });
+    
+    if (!res.ok) return []; // Might be empty repo
+    
+    const data = await res.json();
+    return data.map((b: any) => b.name);
+};
+
+// Get the full file tree of the remote branch to compare SHAs
+export const getRemoteTree = async (token: string, owner: string, repo: string, branch: string) => {
+    // 1. Get branch head
+    const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${branch}`, {
+        headers: { Authorization: `Bearer ${token}` }
+    });
+    
+    if (!refRes.ok) return null; // Branch doesn't exist or empty
+    const refData = await refRes.json();
+    const commitSha = refData.object.sha;
+
+    // 2. Get tree (recursive)
+    const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`, {
+        headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!treeRes.ok) return null;
+    const treeData = await treeRes.json();
+    
+    // Return a map of path -> sha
+    const fileMap = new Map<string, string>();
+    treeData.tree.forEach((item: any) => {
+        if (item.type === 'blob') {
+            fileMap.set(item.path, item.sha);
+        }
+    });
+    
+    return fileMap;
 };
 
 export const uploadToGitHub = async (
@@ -70,15 +195,13 @@ export const uploadToGitHub = async (
   try {
     const refRes = await fetch(`${baseUrl}/git/ref/heads/${branch}`, { headers });
     if (!refRes.ok) {
-        const errorText = await refRes.text();
-        // Branch might not exist, try to create it or error? 
-        // For simplicity, assume main exists or handle error
         if (refRes.status === 404) {
-             throw new Error(`Branch '${branch}' not found. Ensure the repository exists and is initialized (e.g. has a README).`);
+             throw new Error(`Branch '${branch}' not found. Ensure the repository exists and is initialized.`);
         }
         if (refRes.status === 401) {
             throw new Error(`Authentication failed. Please check your GitHub token.`);
         }
+        const errorText = await refRes.text();
         throw new Error(`GitHub API Error (${refRes.status}): ${refRes.statusText} - ${errorText}`);
     }
     const refData = await refRes.json();
@@ -89,7 +212,7 @@ export const uploadToGitHub = async (
     const commitData = await commitRes.json();
     baseTreeSha = commitData.tree.sha;
   } catch (error: any) {
-     throw new Error(`Connection failed: ${error.message}`);
+     throw new Error(`${error.message}`);
   }
 
   // 3. Create Blobs for each file
@@ -100,18 +223,12 @@ export const uploadToGitHub = async (
     processed++;
     onProgress(processed, files.length, `Uploading ${file.path}...`);
     
-    // For text files, we can use content directly, but for binary or safety, base64 is often better for the API
-    // The blob API takes content and encoding.
-    
     let content = '';
-    let encoding = 'utf-8';
-
+    
     if (file.isBinary) {
         content = arrayBufferToBase64(file.content as ArrayBuffer);
-        encoding = 'base64';
     } else {
         content = file.content as string;
-        // GitHub Blob API expects utf-8 string or base64
     }
 
     const blobRes = await fetch(`${baseUrl}/git/blobs`, {
@@ -184,4 +301,3 @@ export const uploadToGitHub = async (
   
   onProgress(files.length, files.length, 'Done!');
 };
-
